@@ -1,0 +1,24 @@
+# Python-related
+*.py[cod]
+__pycache__/
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+
+# Environment Variables
+.env
+
+# Virtual Environment
+venv/
+
+# Secrets and Configs
+*.json
+
+# Logs
+*.log
+
+# OS-specific files
+.DS_Store
+Thumbs.db
