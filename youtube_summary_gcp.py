@@ -6,7 +6,8 @@ import requests
 from email.mime.text import MIMEText
 from openai import OpenAI
 from googleapiclient.discovery import build
-from youtube_transcript_api import YouTubeTranscriptApi, TranscriptsDisabled, NoTranscriptFound 
+from youtube_transcript_api import YouTubeTranscriptApi, TranscriptsDisabled, NoTranscriptFound
+from youtube_transcript_api.proxies import GenericProxyConfig
 from email.utils import COMMASPACE
 from google.cloud import secretmanager
 
@@ -36,38 +37,41 @@ try:
     CHANNEL_ID = access_secret("CHANNEL_ID")
     USERNAME_PROXY = access_secret("USERNAME_PROXY")
     PASSWORD_PROXY = access_secret("PASSWORD_PROXY")
+    SENDER_EMAIL = access_secret("SENDER_EMAIL")
+    RECIPIENT_EMAILS = json.loads(access_secret("RECIPIENT_EMAILS"))  # JSON format list
 except Exception as e:
     logging.error(f"Failed to load secrets: {e}")
     raise
 
 # Proxy
-url = 'https://ip.smartproxy.com/json'
-username = USERNAME_PROXY
-password = PASSWORD_PROXY
-proxy = f"http://{username}:{password}@fr.smartproxy.com:40000"
-proxies = {
-    'http': proxy,
-    'https': proxy
+proxy_url = f"http://{USERNAME_PROXY}:{PASSWORD_PROXY}@fr.smartproxy.com:40000"
+requests_proxies = {
+    "http": proxy_url,
+    "https": proxy_url,
 }
 
+# Proxy (pour youtube-transcript-api >= 1.0.0)
+proxy_config = GenericProxyConfig(
+    http_url=proxy_url,
+    https_url=proxy_url,
+)
+
 def test_proxy():
-    test_url = 'https://ip.smartproxy.com/json'
+    test_url = "https://ip.smartproxy.com/json"
     try:
-        response = requests.get(test_url, proxies=proxies, timeout=10)
-        if response.status_code == 200:
+        r = requests.get(test_url, proxies=requests_proxies, timeout=10)
+        if r.status_code == 200:
             logging.info("Proxy authentication successful.")
-            logging.info("Proxy response: %s", response.text)
+            logging.info("Proxy response: %s", r.text)
             return True
-        else:
-            logging.warning(f"Proxy test returned status code: {response.status_code}")
-            return False
+        logging.warning(f"Proxy test returned status code: {r.status_code}")
+        return False
     except requests.exceptions.RequestException as e:
         logging.error(f"Proxy authentication failed: {e}")
         return False
 
 client = OpenAI(api_key=OPENAI_API_KEY)
-SENDER_EMAIL = "xxx@gmail.com"
-RECIPIENT_EMAILS = ["xxx@gmail.com", "xxx@gmail.com"]
+
 SMTP_SERVER = 'smtp.gmail.com'
 SMTP_PORT = 587
 
@@ -88,20 +92,13 @@ def check_new_video():
         raise
 
 def is_new_video(video_id):
-    # Create the secret manager client within this function
     client = secretmanager.SecretManagerServiceClient()
-    last_video_id_secret = "LAST_VIDEO_ID"  # Secret name in GCP
+    last_video_id_secret = "LAST_VIDEO_ID"
     parent = f"projects/{project_id}/secrets/{last_video_id_secret}"
-    
     try:
-        # Fetch the latest version of the last_video_id secret
         last_video_id = access_secret(last_video_id_secret, project_id)
-        
-        # If it's the same video, skip processing
         if last_video_id == video_id:
             return False
-        
-        # Update the secret if it's a new video
         client.add_secret_version(
             parent=parent,
             payload={'data': video_id.encode("UTF-8")}
@@ -114,15 +111,14 @@ def is_new_video(video_id):
 
 def get_transcript(video_id, video_title):
     try:
-        ytt_api = YouTubeTranscriptApi(proxies=proxies) 
+        ytt_api = YouTubeTranscriptApi(proxy_config=proxy_config) 
         fetched = ytt_api.fetch(video_id)
         transcript = fetched.to_raw_data()
 
-        full_text = ' '.join([item['text'] for item in transcript])
+        full_text = " ".join(item["text"] for item in transcript)
 
-        # Save the transcript to a text file
-        with open('/tmp/transcript.txt', 'w') as file:
-            file.write(full_text)
+        with open("/tmp/transcript.txt", "w") as f:
+            f.write(full_text)
 
         logging.info(f"Transcript successfully retrieved for video: {video_title}")
         return full_text
@@ -132,15 +128,16 @@ def get_transcript(video_id, video_title):
         logging.error(error_message)
         send_error_email(error_message, video_title)
         return None
-
     except NoTranscriptFound:
         error_message = f"No transcript found for the video: {video_title} (ID: {video_id})"
         logging.error(error_message)
         send_error_email(error_message, video_title)
         return None
-
     except Exception as e:
-        error_message = f"An error occurred while fetching the transcript for video: {video_title} (ID: {video_id}). Error: {str(e)}"
+        error_message = (
+            f"An error occurred while fetching the transcript for video: "
+            f"{video_title} (ID: {video_id}). Error: {str(e)}"
+        )
         logging.error(error_message)
         send_error_email(error_message, video_title)
         return None
@@ -179,6 +176,11 @@ def send_email(subject, body):
     
     with smtplib.SMTP(SMTP_SERVER, SMTP_PORT) as server:
         server.starttls()
+
+        print("=== DEBUG SMTP CREDENTIALS ===")
+        print(f"SENDER_EMAIL: {repr(SENDER_EMAIL)}")
+        print(f"SENDER_PASSWORD: {repr(SENDER_PASSWORD)}")
+
         server.login(SENDER_EMAIL, SENDER_PASSWORD)
         server.sendmail(SENDER_EMAIL, RECIPIENT_EMAILS, msg.as_string())
 
@@ -200,17 +202,16 @@ def send_error_email(error_message, video_title):
         logging.error(f"Failed to send error notification email: {str(e)}")
 
 def main(event, context):
-    # Test proxy before starting the main function logic
     if not test_proxy():
         logging.error("Proxy connection failed. Aborting function execution.")
         return
 
     try:
         video_id, video_title = check_new_video()
-        
+
         if is_new_video(video_id):
             logging.info(f"New video detected: {video_title}")
-            
+
             transcript = get_transcript(video_id, video_title)
             if transcript:
                 summary = summarize_with_gpt('/tmp/transcript.txt')
