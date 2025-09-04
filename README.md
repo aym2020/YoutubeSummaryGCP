@@ -23,4 +23,4 @@ google-auth==2.35.0
 httplib2==0.22.0
 openai==1.54.4
 requests==2.32.3
-youtube_transcript_api==0.6.2
+youtube-transcript-api>=1.2.2
