@@ -114,25 +114,31 @@ def is_new_video(video_id):
 
 def get_transcript(video_id, video_title):
     try:
-        transcript = YouTubeTranscriptApi.get_transcript(video_id, proxies=proxies)
+        ytt_api = YouTubeTranscriptApi(proxies=proxies) 
+        fetched = ytt_api.fetch(video_id)
+        transcript = fetched.to_raw_data()
+
         full_text = ' '.join([item['text'] for item in transcript])
-        
+
         # Save the transcript to a text file
         with open('/tmp/transcript.txt', 'w') as file:
             file.write(full_text)
-        
+
         logging.info(f"Transcript successfully retrieved for video: {video_title}")
         return full_text
+
     except TranscriptsDisabled:
         error_message = f"Transcripts are disabled for the video: {video_title} (ID: {video_id})"
         logging.error(error_message)
         send_error_email(error_message, video_title)
         return None
+
     except NoTranscriptFound:
         error_message = f"No transcript found for the video: {video_title} (ID: {video_id})"
         logging.error(error_message)
         send_error_email(error_message, video_title)
         return None
+
     except Exception as e:
         error_message = f"An error occurred while fetching the transcript for video: {video_title} (ID: {video_id}). Error: {str(e)}"
         logging.error(error_message)
